@@ -4,7 +4,7 @@ See where your Datadog money goes, by product and team, and generate the changes
 
 Built for the platform or SRE lead heading into a renewal: the bill is usage-based across a dozen dimensions, the cost data is hard to get at, and the renewal quote can arrive at close to twice last year's. Bill Audit turns the usage exports you already have into an attributed bill, a forecast to the renewal date, and config you can review and apply.
 
-Live: https://bill-audit.vercel.app
+Live: https://bill-audit-tau.vercel.app
 
 ## Features
 
