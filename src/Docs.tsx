@@ -41,6 +41,19 @@ curl -sG "https://api.datadoghq.com/api/v2/usage/estimated_cost" \\
   --data-urlencode "start_month=2026-10" \\
   --data-urlencode "view=summary" > estimated_cost.json`
 
+const API_V2_HOURLY = `# Hourly usage by product family, no tags (any plan; Usage Read permission)
+curl -sG "https://api.datadoghq.com/api/v2/usage/hourly_usage" \\
+  -H "DD-API-KEY: $DD_API_KEY" -H "DD-APPLICATION-KEY: $DD_APP_KEY" \\
+  --data-urlencode "filter[timestamp][start]=2026-10-01T00" \\
+  --data-urlencode "filter[timestamp][end]=2026-11-01T00" \\
+  --data-urlencode "filter[product_families]=infra_hosts,indexed_spans,ingested_spans,logs,timeseries" > hourly_usage.json`
+
+const API_LOGS_INDEX = `# Indexed log events per index, hourly (sums to one row per index)
+curl -sG "https://api.datadoghq.com/api/v1/usage/logs_by_index" \\
+  -H "DD-API-KEY: $DD_API_KEY" -H "DD-APPLICATION-KEY: $DD_APP_KEY" \\
+  --data-urlencode "start_hr=2026-10-01T00" \\
+  --data-urlencode "end_hr=2026-11-01T00" > logs_by_index.json`
+
 const API_UNQUERIED = `# Custom metrics nobody queried in the last 30 days (set queries_30d to 0 for these)
 curl -sG "https://api.datadoghq.com/api/v2/metrics" \\
   -H "DD-API-KEY: $DD_API_KEY" -H "DD-APPLICATION-KEY: $DD_APP_KEY" \\
@@ -99,8 +112,12 @@ export function Docs() {
             <Code>{API_ATTR}</Code>
             <Code>{API_HOURLY}</Code>
             <p>Hourly files are metered the way Datadog bills: host products take the high-water mark after dropping the top 1% of hours, containers and custom metrics take the monthly average, and volumes are summed. Each tag's share of that billable number follows its share of the hours.</p>
+            <Code>{API_V2_HOURLY}</Code>
+            <p>The product-family response reports some counts twice (<code>agent_host_count</code> and <code>aws_host_count</code> are subsets of <code>host_count</code>), so only each family's billable total is read. It has no tags, so everything lands as unattributed until you import an attribution file for the same month.</p>
             <Code>{API_COST}</Code>
             <p>The estimated-cost response (<code>data[].attributes.charges[]</code> with <code>product_name</code>, <code>charge_type</code> and <code>cost</code>) is attached to its month and compared with the modelled bill on the Overview. A gap over 10% usually means contract rates or commitments are not set yet.</p>
+            <p>The projected-cost (<code>/api/v2/usage/projected_cost</code>) and historical-cost responses have the same shape and import the same way. When a response carries <code>total</code> charges next to <code>committed</code> and <code>on_demand</code> ones, only the totals are summed, so nothing is counted twice. Products this model does not price (Fargate, Lambda, CSM and others) are listed as a warning on import.</p>
+            <p>The JSON importers are tested against real responses recorded by Datadog's public API client test suite (<a href="https://github.com/DataDog/datadog-api-client-python/tree/master/tests" target="_blank" rel="noreferrer">datadog-api-client-python</a>, Apache-2.0), checked on 2026-11-13.</p>
 
             <h2 id="metrics">Custom metrics breakdown</h2>
             <ol>
@@ -114,6 +131,8 @@ export function Docs() {
             <h2 id="logs">Log volume by index</h2>
             <p>Graph these estimated-usage metrics over the month in a Notebook or the Metrics Explorer, set the time frame to the billing month, and export the table (or read the totals off the Logs tab of <b>Plan &amp; Usage → Usage</b>):</p>
             <Code>{LOG_QUERY}</Code>
+            <p>Or import the logs-by-index API response directly. It has event counts and retention per index but no bytes, so ingested GB is estimated at 1 KB per event (you will see a warning); add a CSV with <code>ingested_gb</code> for exact numbers.</p>
+            <Code>{API_LOGS_INDEX}</Code>
             <p>Columns: <code>index</code>, <code>query</code> (the index filter, used in generated configs), <code>team</code>, <code>events_m</code> (millions of indexed events) or <code>events</code>, <code>ingested_gb</code>, <code>retention_days</code>, optional <code>queries_30d</code> (searches, monitors and dashboard queries against the index; Audit Trail log-search events are a good source) and <code>flex</code>.</p>
 
             <h2 id="formats">File formats the importer detects</h2>
@@ -124,7 +143,9 @@ export function Docs() {
                 <tr><td>Hourly Usage Attribution CSV/TSV</td><td>An <code>hour</code> column with several timestamps per month; single-product files with <code>total_usage</code> ask which product</td></tr>
                 <tr><td>Usage trends CSV (no tags)</td><td>A date column plus product columns</td></tr>
                 <tr><td>Monthly or hourly usage attribution JSON</td><td><code>usage[].values</code> or <code>usage[].usage_type</code></td></tr>
-                <tr><td>Estimated cost JSON</td><td><code>data[].attributes.charges</code></td></tr>
+                <tr><td>Hourly usage by product family JSON (v2)</td><td><code>data[].attributes.measurements</code></td></tr>
+                <tr><td>Estimated, projected or historical cost JSON</td><td><code>data[].attributes.charges</code></td></tr>
+                <tr><td>Logs usage by index JSON</td><td><code>usage[].index_name</code> with <code>event_count</code></td></tr>
                 <tr><td>Custom metrics / log index CSV</td><td>A metric-name column with a timeseries column / an index column with a volume column</td></tr>
               </tbody>
             </table>

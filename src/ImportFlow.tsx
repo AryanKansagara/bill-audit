@@ -90,7 +90,7 @@ export function ImportFlow({ project, onDone }: { project?: Project; onDone: (id
         >
           <Icon name="upload" size={28} />
           <p><b>Drop a CSV, TSV or JSON export</b> or <button className="btn btn-link" onClick={() => inputRef.current?.click()}>choose a file</button></p>
-          <p className="muted small">Usage Attribution (monthly or hourly), usage-attribution or estimated-cost API JSON, custom-metric or log-index breakdowns. Files are read in this browser and not uploaded.</p>
+          <p className="muted small">Usage Attribution (monthly or hourly), usage-attribution, hourly-usage, logs-by-index or cost API JSON, custom-metric or log-index breakdowns. Files are read in this browser and not uploaded.</p>
           <input ref={inputRef} type="file" accept=".csv,.tsv,.json,.txt" hidden onChange={e => void onFile(e.target.files?.[0])} />
         </div>
         <details className="paste">

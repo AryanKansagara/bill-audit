@@ -95,7 +95,15 @@ export function detect(text: string): Detection {
   if (t.startsWith('{') || t.startsWith('[')) {
     try {
       const j = JSON.parse(t)
-      if (Array.isArray(j?.data) && j.data.some((d: any) => d?.attributes?.charges)) return { format: 'cost-json', label: 'Estimated cost (API JSON)', columns: [], needsProduct: false, confidence: 1 }
+      const list = Array.isArray(j) ? j : Array.isArray(j?.usage) ? j.usage : Array.isArray(j?.data) ? j.data : null
+      if (list && !list.length) return { format: 'unknown', label: 'This response has no records. Widen the date range and export again.', columns: [], needsProduct: false, confidence: 0 }
+      if (Array.isArray(j?.data) && j.data.some((d: any) => d?.attributes?.charges)) {
+        const type = String(j.data[0]?.type ?? '')
+        const label = type === 'projected_cost' ? 'Projected cost (API JSON)' : type.includes('historical') ? 'Historical cost (API JSON)' : 'Estimated cost (API JSON)'
+        return { format: 'cost-json', label, columns: [], needsProduct: false, confidence: 1 }
+      }
+      if (Array.isArray(j?.usage) && j.usage.some((u: any) => u?.index_name != null && u?.event_count != null)) return { format: 'logs-csv', label: 'Hourly logs usage by index (API JSON)', columns: [], needsProduct: false, confidence: 1 }
+      if (Array.isArray(j?.data) && j.data.some((d: any) => Array.isArray(d?.attributes?.measurements))) return { format: 'usage-json', label: 'Hourly usage by product family (API JSON)', columns: [], needsProduct: false, confidence: 1 }
       if (Array.isArray(j?.usage) && j.usage.some((u: any) => u?.hour && u?.usage_type)) return { format: 'usage-json', label: 'Hourly usage attribution (API JSON)', columns: [], needsProduct: false, confidence: 1 }
       if (Array.isArray(j?.usage) && j.usage.some((u: any) => u?.values)) return { format: 'usage-json', label: 'Monthly usage attribution (API JSON)', columns: [], needsProduct: false, confidence: 1 }
       if (Array.isArray(j?.data) && j.data.some((d: any) => d?.attributes?.values)) return { format: 'usage-json', label: 'Monthly cost or usage attribution (API JSON)', columns: [], needsProduct: false, confidence: 0.8 }
@@ -177,7 +185,11 @@ export function build(text: string, det: Detection, fallbackMonth: string): Impo
   if (det.format === 'cost-json') return buildCost(text, fallbackMonth)
   if (det.format === 'usage-json') return buildUsageJson(text, fallbackMonth)
   if (det.format === 'metrics-csv') return buildMetrics(text, det)
-  if (det.format === 'logs-csv') return buildLogs(text, det)
+  if (det.format === 'logs-csv') {
+    if (!text.trim().startsWith('{')) return buildLogs(text, det)
+    const csv = logsByIndexJsonToCsv(JSON.parse(text).usage ?? [])
+    return { ...buildLogs(csv, detect(csv)), format: 'logs-csv' }
+  }
   return buildUsageCsv(text, det, fallbackMonth)
 }
 
@@ -243,6 +255,9 @@ function buildUsageCsv(text: string, det: Detection, fallbackMonth: string): Imp
     }
   }
 
+  const w = unpricedWarning(cols.flatMap((c, i) => c.role.kind === 'ignore' && /_usage$/i.test(c.header.trim()) && rows.slice(1).some(r => (toNumber(r[i]) ?? 0) > 0) ? [c.header.trim()] : []))
+  if (w) res.issues.push(w)
+
   for (const [month, byDim] of acc) {
     const hours = [...(hoursPerMonth.get(month) ?? [])]
     if (hourly && new Set(hours.map(h => h.slice(0, 10))).size < 28) res.partial.push(month)
@@ -278,12 +293,77 @@ function hourlyJsonToCsv(items: any[]): string {
     row[1 + tagKeys.length + types.indexOf(String(u.usage_type))] = String(u.total_usage_sum ?? '')
     rows.set(key, row)
   }
-  const esc = (v: string) => /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v
-  return [['hour', ...tagKeys, ...types], ...rows.values()].map(r => r.map(esc).join(',')).join('\n')
+  return toCsv([['hour', ...tagKeys, ...types], ...rows.values()])
+}
+
+const esc = (v: string) => /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v
+const toCsv = (rows: string[][]) => rows.map(r => r.map(esc).join(',')).join('\n')
+
+/** /api/v1/usage/logs_by_index: hourly event counts per index, summed to one row per index. */
+function logsByIndexJsonToCsv(items: any[]): string {
+  const by = new Map<string, { events: number; retention: string }>()
+  for (const u of items) {
+    const name = String(u?.index_name ?? '').trim()
+    if (!name) continue
+    const e = by.get(name) ?? { events: 0, retention: String(u?.retention ?? '') }
+    e.events += Number(u?.event_count) || 0
+    by.set(name, e)
+  }
+  return toCsv([['index', 'events', 'retention'], ...[...by].map(([k, v]) => [k, String(v.events), v.retention])])
+}
+
+/**
+ * /api/v2/usage/hourly_usage: one record per hour and product family. The same usage type name can mean
+ * different products in different families, and some families report subsets of a total
+ * (aws_host_count within host_count), so only the billable total per family is taken.
+ */
+const FAMILY_TYPES: Record<string, Record<string, string>> = {
+  infra_hosts: { host_count: 'infra_host_usage', container_count: 'container_usage', apm_host_count: 'apm_host_usage' },
+  timeseries: { num_custom_timeseries: 'custom_timeseries_usage', num_custom_input_timeseries: 'custom_ingested_timeseries_usage' },
+  logs: { ingested_events_bytes: 'ingested_logs_bytes_usage' },
+  indexed_logs: { logs_indexed_events_3_day_count: 'logs_indexed_3day', logs_indexed_events_7_day_count: 'logs_indexed_7day', logs_indexed_events_15_day_count: 'logs_indexed_15day', logs_indexed_events_30_day_count: 'logs_indexed_30day', indexed_events_count: 'logs_indexed_15day' },
+  indexed_spans: { indexed_events_count: 'indexed_spans_usage' },
+  ingested_spans: { ingested_events_bytes: 'ingested_spans_bytes_usage' },
+  profiling: { num_profiled_hosts: 'profiled_host_usage', profiling_host_count: 'profiled_host_usage', num_profiled_containers: 'profiled_container_usage', profiling_container_agent_count: 'profiled_container_usage' },
+  dbm: { dbm_host_count: 'dbm_hosts_usage' },
+  rum: { rum_browser_and_mobile_session_count: 'rum_browser_mobile_sessions_usage' },
+  synthetics_api: { check_calls_count: 'api_usage' },
+  synthetics_browser: { browser_check_calls_count: 'browser_usage' },
+}
+
+function hourlyUsageV2ToCsv(items: any[]): string {
+  const cols: string[] = []
+  const rows = new Map<string, Map<string, number>>()
+  for (const d of items) {
+    const a = d?.attributes ?? {}
+    const map = FAMILY_TYPES[String(a.product_family)] ?? {}
+    const hour = String(a.timestamp ?? '')
+    const row = rows.get(hour) ?? new Map<string, number>()
+    rows.set(hour, row)
+    for (const m of a.measurements ?? []) {
+      const col = map[String(m?.usage_type)]
+      if (!col || m.value == null) continue
+      if (!cols.includes(col)) cols.push(col)
+      row.set(col, (row.get(col) ?? 0) + Number(m.value))
+    }
+  }
+  return toCsv([['hour', ...cols], ...[...rows].map(([h, r]) => [h, ...cols.map(c => r.has(c) ? String(r.get(c)) : '')])])
+}
+
+/** Usage columns that carry non-zero values but are not priced in this model, so the bill is known to be partial. */
+function unpricedWarning(names: Iterable<string>): Issue | null {
+  const list = [...new Set(names)].sort()
+  if (!list.length) return null
+  return { line: 1, severity: 'warning', message: `Not priced in this model, left out of the bill: ${list.slice(0, 8).join(', ')}${list.length > 8 ? ` and ${list.length - 8} more` : ''}.` }
 }
 
 function buildUsageJson(text: string, fallbackMonth: string): ImportResult {
   const j = JSON.parse(text)
+  if (Array.isArray(j.data) && j.data.some((d: any) => Array.isArray(d?.attributes?.measurements))) {
+    const csv = hourlyUsageV2ToCsv(j.data)
+    const res = buildUsageCsv(csv, detect(csv), fallbackMonth)
+    return { ...res, format: 'usage-json', rowsRead: j.data.length }
+  }
   if (Array.isArray(j.usage) && j.usage.some((u: any) => u?.hour && u?.usage_type)) {
     const csv = hourlyJsonToCsv(j.usage)
     const res = buildUsageCsv(csv, detect(csv), fallbackMonth)
@@ -292,6 +372,7 @@ function buildUsageJson(text: string, fallbackMonth: string): ImportResult {
   const res = empty('usage-json')
   const items: any[] = Array.isArray(j.usage) ? j.usage : (j.data ?? []).map((d: any) => d.attributes)
   res.rowsRead = items.length
+  const unpriced: string[] = []
   items.forEach((u, i) => {
     const month = monthOf(String(u?.month ?? u?.date ?? '')) ?? fallbackMonth
     const tags: Record<string, string> = {}
@@ -302,8 +383,8 @@ function buildUsageJson(text: string, fallbackMonth: string): ImportResult {
     let used = false
     for (const [k, v] of Object.entries(u?.values ?? {})) {
       const role = dimRole(k)
-      if (!role || role.kind !== 'dim') continue
       const n = toNumber(v as any)
+      if (!role || role.kind !== 'dim') { if (n && /_usage$/.test(k)) unpriced.push(k); continue }
       if (n === null) continue
       if (n < 0) { res.issues.push({ line: i + 1, column: k, severity: 'error', message: 'Negative usage skipped.' }); continue }
       ;(res.months[month] ??= []).push({ dim: role.dim, qty: n * role.scale, tags })
@@ -312,6 +393,8 @@ function buildUsageJson(text: string, fallbackMonth: string): ImportResult {
     if (used) res.rowsUsed++
     else res.issues.push({ line: i + 1, severity: 'warning', message: 'Record has no recognised usage values.' })
   })
+  const w = unpricedWarning(unpriced)
+  if (w) res.issues.push(w)
   return res
 }
 
@@ -387,7 +470,7 @@ function buildLogs(text: string, det: Detection): ImportResult {
     if (gb === null && bi >= 0) { const b = toNumber(r[bi]); gb = b === null ? null : b / 1e9 }
     if (events === null && gb === null) { res.issues.push({ line, severity: 'error', message: 'Needs an event count or a GB volume.' }); continue }
     if (events === null) { events = (gb ?? 0) * 1e9 / 1000; res.issues.push({ line, severity: 'warning', message: 'No event count: estimated at 1 KB per event.' }) }
-    if (gb === null) gb = events * 1000 / 1e9
+    if (gb === null) { gb = events * 1000 / 1e9; res.issues.push({ line, severity: 'warning', message: 'No GB volume: ingested GB estimated at 1 KB per event.' }) }
     const retention = ri >= 0 ? toNumber(r[ri]) ?? 15 : 15
     if (ri < 0 || toNumber(r[ri]) === null) res.issues.push({ line, severity: 'warning', message: 'No retention: assumed 15 days.' })
     const flexRaw = fi >= 0 ? (r[fi] ?? '').trim().toLowerCase() : ''

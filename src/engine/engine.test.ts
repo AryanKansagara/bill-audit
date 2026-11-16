@@ -1,4 +1,5 @@
 import { test } from 'node:test'
+import { readFileSync } from 'node:fs'
 import assert from 'node:assert/strict'
 import { aliasDim, DIM, retentionDim } from './prices.ts'
 import {
@@ -350,4 +351,91 @@ test('hourly usage attribution JSON is metered like the hourly CSV', () => {
   // 48 hours: floor(0.48) = 0 hours dropped, so the spike hour (105) is the high-water mark.
   close(rows.reduce((a, x) => a + x.qty, 0), 105)
   assert.ok(rows.every(x => x.dim === 'infra_host'))
+})
+
+// Real API responses recorded by Datadog's public API client test suite
+// (github.com/DataDog/datadog-api-client-python, tests/*/cassettes, Apache-2.0), trimmed.
+const fixture = (name: string) => readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8')
+
+test('real v1 usage attribution response bills to a hand-calculated on-demand total', () => {
+  const t = fixture('v1-usage-attribution.json')
+  const r = build(t, detect(t), '2026-01')
+  const u = r.months['2022-05']
+  assert.ok(u)
+  const bill = computeBill(u, S())
+  // No commits, so on-demand list: 12 APM hosts x $36, 1 host x $27, 1.45 profiled containers x $2.92
+  // (no profiled hosts, so no allotment), 97,173 API runs at $7.20/10K, 368 browser runs at $18/1K.
+  // 1 container and 76.63 custom metrics sit inside the per-host allotments.
+  const expected = 12 * 36 + 27 + 1.45 * 2.92 + 9.7173 * 7.2 + 0.368 * 18
+  assert.ok(Math.abs(bill.total - expected) < 1e-6, `${bill.total} vs ${expected}`)
+  assert.equal(bill.lines.find(l => l.dim === 'custom_metric')!.cost, 0)
+  assert.equal(bill.lines.find(l => l.dim === 'container')!.cost, 0)
+})
+
+test('real v1 hourly usage attribution (tags null) meters the p99 host count', () => {
+  const t = fixture('v1-hourly-usage-attribution.json')
+  const r = build(t, detect(t), '2026-01')
+  assert.equal(r.rowsRead, 16)
+  assert.deepEqual(r.months['2022-05'].map(x => [x.dim, x.qty]), [['infra_host', 18]])
+  assert.deepEqual(r.partial, ['2022-05'])
+})
+
+test('real v2 hourly usage by product family maps host totals, not the per-cloud subsets', () => {
+  const t = fixture('v2-hourly-usage-infra-hosts.json')
+  const d = detect(t)
+  assert.equal(d.label, 'Hourly usage by product family (API JSON)')
+  const r = build(t, d, '2026-01')
+  const totals = Object.fromEntries(r.months['2022-07'].map(x => [x.dim, x.qty]))
+  // host_count 14 also reported as agent_host_count 14; counting both would double it.
+  assert.deepEqual(totals, { infra_host: 14, apm_host: 4 })
+})
+
+test('real v1 logs-by-index response becomes a log index breakdown', () => {
+  const t = fixture('v1-logs-by-index.json')
+  const d = detect(t)
+  assert.equal(d.format, 'logs-csv')
+  const r = build(t, d, '2026-01')
+  assert.equal(r.logIndexes.length, 1)
+  const ix = r.logIndexes[0]
+  assert.equal(ix.index, 'main')
+  assert.equal(ix.retention, 15)
+  assert.equal(ix.events, 67450)
+  assert.ok(r.issues.some(i => /1 KB per event/.test(i.message)))
+})
+
+test('real projected cost response reconciles against the per-product totals only', () => {
+  const t = fixture('v2-projected-cost.json')
+  const d = detect(t)
+  assert.equal(d.label, 'Projected cost (API JSON)')
+  const r = build(t, d, '2026-01')
+  const rows = r.reported['2023-11']
+  assert.ok(rows.some(x => x.chargeType === 'projected_on_demand'))
+  const rec = reconcile(snap([], { reported: rows }), S())!
+  assert.ok(Math.abs(rec.reported - JSON.parse(t).data[0].attributes.projected_total_cost) < 0.01)
+})
+
+test('real multi-org estimated cost response sums committed and on-demand charges', () => {
+  const t = fixture('v2-estimated-cost-by-org.json')
+  const r = build(t, detect(t), '2026-01')
+  const rec = reconcile(snap([], { reported: r.reported['2022-04'] }), S())!
+  assert.ok(Math.abs(rec.reported - 73.17) < 1e-9)
+})
+
+test('empty API responses are named as empty, not as an unknown format', () => {
+  for (const t of ['{"data":[]}', '{"usage":[],"metadata":{}}']) {
+    const d = detect(t)
+    assert.equal(d.format, 'unknown')
+    assert.match(d.label, /no records/)
+  }
+})
+
+test('non-zero usage for products the model does not price is reported, zeros are not', () => {
+  const csv = 'month,team,infra_host_usage,fargate_usage,lambda_functions_usage\n2026-10,a,10,4,0\n'
+  const r = build(csv, detect(csv), '2026-01')
+  const w = r.issues.find(i => /Not priced/.test(i.message))
+  assert.ok(w)
+  assert.match(w.message, /fargate_usage/)
+  assert.doesNotMatch(w.message, /lambda/)
+  const json = JSON.stringify({ usage: [{ month: '2026-10-01', tags: null, values: { infra_host_usage: 2, npm_host_usage: 3 } }] })
+  assert.match(build(json, detect(json), '2026-01').issues.map(i => i.message).join(), /npm_host_usage/)
 })
