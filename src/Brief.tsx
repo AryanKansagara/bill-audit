@@ -86,7 +86,7 @@ export function Brief({ id }: { id: string }) {
         </section>
 
         <footer className="brief-foot">
-          Estimates use Datadog public list prices captured {PRICES_AS_OF}{Object.keys(p.settings.rates).length ? `, with ${Object.keys(p.settings.rates).length} contract rate override(s)` : ''}. Hosts bill on the 99th-percentile high-water mark; allotments are pooled per account. Prepared with Bill Audit, an independent tool not affiliated with Datadog.
+          Estimates use Datadog public list prices captured {PRICES_AS_OF}{Object.keys(p.settings.rates).length ? `, with ${Object.keys(p.settings.rates).length} contract rate override(s)` : ''}. Hosts bill on the 99th-percentile high-water mark; allotments are pooled per account. Prepared with Bill Audit.
         </footer>
       </article>
     </div>

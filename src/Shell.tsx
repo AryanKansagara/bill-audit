@@ -37,7 +37,7 @@ export function Footer() {
     <footer className="ftr">
       <div className="ftr-in">
         <div className="ftr-brand"><Monogram size={22} /> <b>Bill Audit</b></div>
-        <p>Built by Aryan Kansagara. Independent project, not affiliated with Datadog. Datadog is a trademark of its owner.</p>
+        <p>Built by Aryan Kansagara.</p>
         <nav aria-label="Footer"><Link to="/docs">Docs</Link><Link to="/docs#pricing">Price assumptions</Link><Link to="/settings">Settings</Link></nav>
       </div>
     </footer>

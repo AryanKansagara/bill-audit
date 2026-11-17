@@ -30,4 +30,4 @@ npm run build
 
 Cloud sync reads `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` from `.env` (public values; data is protected by row-level security). Without them the app runs in local mode.
 
-Built by Aryan Kansagara. Independent project, not affiliated with Datadog.
+Built by Aryan Kansagara.
