@@ -26,8 +26,17 @@ npm install
 npm run dev     # http://localhost:5173
 npm test        # engine tests
 npm run build
+npm run test:e2e  # browser tests, see below
 ```
 
 Cloud sync reads `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` from `.env` (public values; data is protected by row-level security). Without them the app runs in local mode.
+
+## End-to-end tests
+
+`npm run test:e2e` builds the app and runs a small [Playwright](https://playwright.dev) suite (Chromium) in `e2e/` against the production build served by `vite preview`. Install the browser once with `npx playwright install chromium` (on Linux add `--with-deps`).
+
+The tests are signed out and never reach a real backend: requests to anything but the preview server are aborted (Google Fonts is stubbed), and a test fails if the app tries to call one or throws an uncaught error. They cover the sample (cost by team, forecast, levers), importing the real API fixtures from `src/engine/fixtures` and downloading the generated Terraform, files the importer cannot read, and persistence across a reload.
+
+The preview port defaults to 4173; set `E2E_PORT` to use another. GitHub Actions (`.github/workflows/ci.yml`) runs install, build, unit and E2E tests on every pull request and push to `main`, and caches the Chromium download by Playwright version.
 
 Built by Aryan Kansagara.
