@@ -32,14 +32,50 @@ test.describe('files the importer cannot use', () => {
     })
   }
 
-  test('an empty file imports nothing and leaves the page usable', async ({ page }) => {
-    // The app currently shows no message for this (issue #2), so only the outcome is asserted.
+  for (const { why, content } of [
+    { why: 'an empty file (0 bytes)', content: '' },
+    { why: 'a file of only whitespace', content: ' \n\t\r\n  \n' },
+    { why: 'a file of only a byte order mark', content: '\uFEFF' },
+  ]) {
+    test(`${why}: says it is empty, imports nothing, app stays usable`, async ({ page }) => {
+      await page.goto('/app?import=1')
+      await page.locator('input[type=file]').setInputFiles(file('empty.csv', content))
+
+      const alert = page.getByRole('alert')
+      await expect(alert).toContainText('This file is empty')
+      await expect(alert).toContainText('empty.csv')
+      await expect(page.getByRole('heading', { name: /^Detected:/ })).toHaveCount(0)
+      await expect(page.getByRole('button', { name: /^Import/ })).toHaveCount(0)
+
+      // Choosing a real file replaces the message.
+      await page.locator('input[type=file]').setInputFiles(file('ok.csv', 'month,team,infra_host_usage\n2026-10,a,5\n'))
+      await expect(page.getByRole('heading', { name: /^Detected:/ })).toBeVisible()
+      await expect(page.getByRole('alert')).toHaveCount(0)
+    })
+  }
+
+  test('the empty-file message goes away with an example, and an empty file replaces an earlier detection', async ({ page }) => {
     await page.goto('/app?import=1')
-    await page.locator('input[type=file]').setInputFiles(file('empty.csv', ''))
-    await expect(page.getByRole('heading', { name: /^Detected:/ })).toHaveCount(0)
-    await expect(page.getByRole('button', { name: /^Import/ })).toHaveCount(0)
+    const input = page.locator('input[type=file]')
+    await input.setInputFiles(file('empty.csv', ''))
+    await expect(page.getByRole('alert')).toContainText('This file is empty')
     await page.getByRole('button', { name: 'Log volume by index' }).click()
     await expect(page.getByRole('heading', { name: 'Detected: Log volume by index' })).toBeVisible()
+    await expect(page.getByRole('alert')).toHaveCount(0)
+
+    // A good file was loaded; an empty one now replaces it instead of leaving it on screen.
+    await input.setInputFiles(file('empty2.csv', ''))
+    await expect(page.getByRole('alert')).toContainText('empty2.csv')
+    await expect(page.getByRole('heading', { name: /^Detected:/ })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: /^Import/ })).toHaveCount(0)
+  })
+
+  test('pasting an empty or blank string does not show the empty-file message', async ({ page }) => {
+    await page.goto('/app?import=1')
+    await page.getByText('Or paste data').click()
+    await page.getByLabel('Paste export data').fill('   ')
+    await expect(page.getByRole('alert')).toHaveCount(0)
+    await expect(page.getByRole('heading', { name: /^Detected:/ })).toHaveCount(0)
   })
 
   test('a mostly good file reports the bad cell by line and column, and does not hide it', async ({ page }) => {

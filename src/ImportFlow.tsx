@@ -12,6 +12,7 @@ export function ImportFlow({ project, onDone }: { project?: Project; onDone: (id
   const [text, setText] = useState('')
   const [fileName, setFileName] = useState('')
   const [det, setDet] = useState<Detection | null>(null)
+  const [emptyFile, setEmptyFile] = useState<string | null>(null)
   const [product, setProduct] = useState<DimId>('infra_host')
   const [target, setTarget] = useState('')
   const [name, setName] = useState('My Datadog account')
@@ -24,6 +25,7 @@ export function ImportFlow({ project, onDone }: { project?: Project; onDone: (id
   const load = (t: string, file = '') => {
     setText(t)
     setFileName(file)
+    setEmptyFile(null)
     const d = t.trim() ? detect(t) : null
     setDet(d)
     setTarget(existing.at(-1)?.month ?? thisMonth)
@@ -32,7 +34,12 @@ export function ImportFlow({ project, onDone }: { project?: Project; onDone: (id
     if (!f) return
     if (f.size > MAX_FILE) { toast('That file is over 50 MB. Export a narrower date range or fewer tags.', { kind: 'error' }); return }
     setBusy(true)
-    try { load(await f.text(), f.name) } finally { setBusy(false) }
+    try {
+      const t = await f.text()
+      load(t, f.name)
+      // A pasted empty string has nothing to report, but a chosen file should say it was empty.
+      if (!t.trim()) setEmptyFile(f.name)
+    } finally { setBusy(false) }
   }
   const effective = useMemo<Detection | null>(() => {
     if (!det) return null
@@ -69,7 +76,7 @@ export function ImportFlow({ project, onDone }: { project?: Project; onDone: (id
     else if (effective.format === 'logs-csv') upsert(target, s => ({ ...s, logIndexes: r.logIndexes, source: s.source || src }))
     const saved = await putProject({ ...base, snapshots: snaps })
     toast(isUsage ? `Imported ${months.length} month${months.length === 1 ? '' : 's'} of usage` : `Attached ${effective.label.toLowerCase()} to ${monthName(target, true)}`)
-    setText(''); setDet(null)
+    setText(''); setDet(null); setEmptyFile(null)
     onDone(saved.id)
   }
 
@@ -121,6 +128,8 @@ export function ImportFlow({ project, onDone }: { project?: Project; onDone: (id
         </section>
       )}
 
+      {emptyFile !== null && !det && <section className="card err-card" role="alert"><b>This file is empty:</b> {emptyFile} has no data. Choose an export that has a header row and at least one data row.</section>}
+
       {det && result && 'error' in result && <section className="card err-card" role="alert"><b>Could not read this file:</b> {result.error}</section>}
 
       {r && effective && (
@@ -154,7 +163,7 @@ export function ImportFlow({ project, onDone }: { project?: Project; onDone: (id
           )}
           {!project && <label className="field inline">Project name<input value={name} onChange={e => setName(e.target.value)} /></label>}
           <div className="row-end">
-            <button className="btn btn-ghost" onClick={() => { setText(''); setDet(null) }}>Start over</button>
+            <button className="btn btn-ghost" onClick={() => { setText(''); setDet(null); setEmptyFile(null) }}>Start over</button>
             <button className="btn btn-primary" disabled={!canImport} onClick={commit}>{isUsage ? `Import ${months.length} month${months.length === 1 ? '' : 's'}` : 'Import breakdown'}</button>
           </div>
           <p className="muted small">Only the parsed usage is saved. The raw file stays out of storage and sync.</p>
